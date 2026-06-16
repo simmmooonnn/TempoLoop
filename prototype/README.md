@@ -15,8 +15,10 @@ Minimal, stdlib-only harness that answers the single decision in `FRAMING2.md` s
 | `week3_probe.py` | **abstract** sanity probe — reward sampled directly from per-granularity priors | fastest check that the verdict logic + H2 mechanism behave |
 | `apparatus.py` + `run_probe.py` | **wired** probe — reward flows through the *real* pipeline: `trace --A_g--> unit --O--> patch --apply--> config' --validate on held-out siblings--> gate` | the one to grow into the real experiment; swap `MockExecutor.rollout` for real models |
 | `decompose.py` | **mechanism** decomposition (C3/H4) — once the probe says GO, explains *why* via two channels: attribution precision (`oracle - realized`) vs executor utilization (force `g`, measure activate-&-follow) | the "why it wins" intervention table for the paper |
+| `llm_executor.py` + `run_probe_llm.py` | **real-LLM probe** — `ClaudeExecutor` runs a real Anthropic tool-use loop with injected faults; same apparatus pipeline, only the executor changes (mock → real Claude) | the actual Week-3 experiment; strong=`claude-opus-4-8`, weak=`claude-haiku-4-5` |
 
-All report consistent verdicts and flip to NO-GO under `--null`.
+The mock probes report consistent verdicts and flip to NO-GO under `--null`. The real-LLM
+probe is where H2 is actually tested — its verdict is the project's go/no-go.
 
 ## Run
 
@@ -33,9 +35,21 @@ python decompose.py --null       # H2 OFF -> utilization flat, no shift to expla
 # abstract sanity probe
 python week3_probe.py
 python week3_probe.py --null
+
+# REAL Claude executors (the actual experiment) — needs an API key + `pip install anthropic`
+export ANTHROPIC_API_KEY=sk-ant-...          # bash;  PowerShell: $env:ANTHROPIC_API_KEY="sk-ant-..."
+python run_probe_llm.py                       # TINY defaults first (a few dozen API calls)
+python run_probe_llm.py --instances 8 --siblings 6   # scale up once plumbing works
 ```
 
-No dependencies (Python 3.8+).
+The mock probes have no dependencies (Python 3.8+). The real-LLM probe needs
+`pip install anthropic` and `ANTHROPIC_API_KEY` in the environment.
+
+> **Security:** the key is read from `ANTHROPIC_API_KEY` by the SDK — never hardcoded.
+> If a key is ever pasted into a chat, file, or commit, rotate it at console.anthropic.com.
+>
+> **Cost:** every rollout is a multi-turn tool loop (2-4 API calls); the probe runs many
+> rollouts. Keep N tiny while validating plumbing, then scale up. You pay for these calls.
 
 ## What is real vs mocked
 

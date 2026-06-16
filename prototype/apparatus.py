@@ -239,7 +239,8 @@ def validate(ex: MockExecutor, patch: Patch, siblings_faulty, n_clean: int) -> V
     patched = sum(ex.rollout(t, cfg).success for t in siblings_faulty) / len(siblings_faulty)
     base = sum(ex.rollout(t, C0).success for t in siblings_faulty) / len(siblings_faulty)
     improvement = patched - base
-    regression = sum(ex.rollout_clean(patch.granularity) for _ in range(n_clean)) / n_clean
+    regression = (sum(ex.rollout_clean(patch.granularity) for _ in range(n_clean)) / n_clean
+                  if n_clean > 0 else 0.0)
     accepted = improvement >= DELTA_MIN and regression <= R_MAX
     reward = (improvement - MU * regression) if accepted else (-MU * regression)
     return Validation(improvement, regression, accepted, reward)

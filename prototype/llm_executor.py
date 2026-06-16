@@ -33,8 +33,12 @@ import apparatus as A
 
 STRONG_MODEL = "claude-opus-4-8"
 WEAK_MODEL = "claude-haiku-4-5"
-MAX_TURNS = 6
-MAX_RETRY_BUDGET = 4   # how many times the env will keep returning the transient error if asked
+MAX_TURNS = 10
+# How many consecutive get_code calls the injected fault keeps failing before the
+# code returns. =1 is trivially recoverable (any model just retries once -> no headroom).
+# Raise it so a naive agent gives up before the code clears, creating room for a
+# recovery repair to help. Tune via env F3_FAIL_TIMES. (GRAINBENCH construct validity.)
+F3_FAIL_TIMES = int(os.environ.get("F3_FAIL_TIMES", "1"))
 
 
 # --------------------------------------------------------------------------- #
@@ -117,8 +121,9 @@ def _dispatch(name, tool_input, state: _RolloutState):
     f = state.task.fault
     if name == "get_code":
         state.get_code_calls += 1
-        if f.fid == "F3" and state.get_code_calls == state.trigger_call:
-            # inject transient error (recoverable by retry)
+        lo = state.trigger_call
+        if f.fid == "F3" and lo <= state.get_code_calls < lo + F3_FAIL_TIMES:
+            # inject transient error (recoverable by persistent retry)
             return ("error: rate_limited (temporary, please retry the same call)",
                     True, {"is_fault": True})
         return (f"code={CORRECT_CODE}", False, {})

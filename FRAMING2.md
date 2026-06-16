@@ -1,264 +1,256 @@
-# Project Framing v2: How Fine Should Failure Attribution Be? A Controlled Study of Repair-Signal Granularity for Self-Evolving LLM Agents
+# Project Framing v2: Adaptive-Granularity Loop Repair for Self-Evolving LLM Agents
 
-> This is an alternative framing to `FRAMING.md`. It abandons the "we propose another self-evolving harness pipeline" positioning, which is now largely subsumed by HarnessFix (arXiv:2606.06324), AHE (2604.25850), and Self-Harness (2606.09498). Instead it reframes the *granularity of the repair signal* as the object of study, and answers a question none of those papers answer: **at what granularity should a failed trace be attributed for the most actionable, regression-safe repair?**
+> Alternative to `FRAMING.md`. The original "we propose another self-evolving harness pipeline" framing is now largely subsumed by HarnessFix (2606.06324), AHE (2604.25850), and Self-Harness (2606.09498). This version is built around two things those papers structurally cannot claim, because each fixes a single repair granularity:
+> 1. **A method** — a failure-type-conditioned router that *chooses* repair granularity per failure and beats every fixed-granularity baseline, including HarnessFix-style layer repair.
+> 2. **A generality finding** — the optimal repair granularity *shifts with the executing agent's capability*, which operationalizes "Harness Updating Is Not Harness Benefit" (2605.30621) instead of merely citing it.
+>
+> The controlled granularity study from the earlier draft is retained, but demoted to the **control condition** that the method and the generality result are built on top of.
 
 ---
 
 ## 0. Working Title
 
-**GrainProbe: How Fine Should Failure Attribution Be for Repairing LLM Agents?**
+**GrainRoute: Adaptive-Granularity Loop Repair for Self-Evolving LLM Agents**
 
 Alternatives:
 
-- **The Granularity of Repair: A Controlled Study of Failure Attribution for Self-Evolving Agents**
-- **Step, Phase, Layer, or Global? Locating the Repair-Signal Sweet Spot for LLM Agents**
+- **The Right Repair Is the Right Size: Failure-Conditioned Granularity Selection for LLM Agents**
+- **Routing Repairs by Granularity: Beyond Fixed-Layer Harness Evolution**
 
 ---
 
 ## 1. Motivation and the Precise Gap
 
-The field already has strong methods that turn failed execution traces into harness/prompt updates. They differ mainly in **how finely they localize the failure before repairing it**:
+Methods that turn failed traces into harness/prompt updates already exist; they differ mainly in **how finely they localize the failure before repairing it**, and each commits to *one* fixed granularity:
 
-- **Global** — reflect over the whole trajectory and update a prompt or harness wholesale (e.g. GEPA-style reflective prompt evolution, ReAct+Reflection).
-- **Functional-layer** — attribute a responsible step to a *component layer* and apply a layer-scoped repair operator. **HarnessFix** does exactly this with its seven ETCLOVG layers (Execution/Sandbox, Tool, Context-Memory, Lifecycle-Orchestration, Observability, Verification, Governance) plus scoped operators and regression-bounded validation. **AHE** and **Self-Harness** are close relatives.
-- **Exact-step** — attribute to a single responsible step via counterfactual intervention and repair with minimal behavioral drift. **CausalFlow** (2605.25338) computes step-level Causal Responsibility Scores and argues *finer, causal* attribution is necessary for reliable improvement.
+- **Global** — reflect over the whole trajectory, update a prompt/harness wholesale (GEPA, ReAct+Reflection).
+- **Functional-layer** — attribute a step to a component layer, apply a layer-scoped operator. **HarnessFix** (seven ETCLOVG layers + scoped operators + regression-bounded validation), **AHE**, **Self-Harness**.
+- **Exact-step** — attribute to a single responsible step via counterfactual intervention, repair with minimal drift. **CausalFlow** (2605.25338) argues *finer/causal* attribution is necessary.
 
-So the literature implicitly disagrees about the right granularity: HarnessFix repairs at the **layer**, CausalFlow argues for the **step**, GEPA stays **global**. **No one has held everything else constant and measured granularity as an independent variable.** That is the gap.
+Two unexploited facts follow:
 
-There is also a confound the field has only just surfaced. **"Harness Updating Is Not Harness Benefit"** (2605.30621) shows that *producing* a good harness update is nearly flat in base-model capability, and that most realized gain depends on the *executing* agent actually activating and following the update (a non-monotonic effect). This means any "method A beats method B" result on self-evolving agents may be confounded by the executor rather than the repair signal. A clean granularity study must control for this.
+1. **The field implicitly disagrees on the right granularity** — HarnessFix says *layer*, CausalFlow says *step*, GEPA stays *global* — and **no method adapts granularity to the failure**. If different failures are best repaired at different granularities, every fixed-granularity method is leaving performance on the table by construction.
 
-The contribution of this project is therefore **not** a new pipeline. It is a **measurement**: a controlled harness that varies only the attribution granularity, holding the executing agent, the repair-operator library, and the validation protocol fixed, and reports how repair quality, regression risk, and cost change with granularity — and how much of any difference is attribution-quality versus executor-utilization.
+2. **"Harness Updating Is Not Harness Benefit"** (2605.30621) shows the realized benefit of an update depends non-monotonically on the *executing* agent's ability to activate and follow it. This implies the *best granularity may move with the executor* — a finer, more specific repair only pays off if the executor can act on it. No prior work tests this.
+
+**The gap, precisely:** there is no method that selects repair granularity per failure, and no evidence on how the optimal granularity depends on the executor. This project delivers both, on top of a controlled apparatus that holds the executor, operator library, and validation gate fixed so that granularity is the only thing that varies.
 
 ---
 
-## 2. Core Research Question
+## 2. Core Research Question and Claims
 
-> Holding the executing agent, the repair-operator library, and the regression-safe validation protocol constant, how does the **granularity** at which a failed trace is attributed affect repair effectiveness, regression risk, and cost — and is there a granularity sweet spot that depends on the failure type?
+> Can a repair system that **selects attribution granularity per failure** outperform any fixed-granularity method, and how does the optimal granularity depend on the failure type and on the executing agent's capability?
 
-Sub-questions:
+Three claims, in priority order:
 
-- **RQ1 (Sweet spot).** Is repair quality non-monotonic in granularity — i.e. is there a "too coarse → imprecise repair" vs "too fine → noisy/overfit attribution" trade-off, with an interior optimum?
-- **RQ2 (Type dependence).** Does the optimal granularity differ by failure type (e.g. tool-argument errors reward fine attribution; planning/decomposition errors reward coarse)?
-- **RQ3 (Confound decomposition).** Of the performance difference between granularities, how much comes from *attribution precision* versus the *executing agent's ability to use* the resulting repair (the 2605.30621 confound)?
+- **C1 (Method).** A failure-type-conditioned granularity **router** beats the best *fixed* granularity — including HarnessFix-style layer repair — on held-out tasks, under identical executor, operator library, and validation gate.
+- **C2 (Generality).** The optimal fixed granularity is **not constant across executors**: it shifts with model capability, and finer granularity can *hurt* weaker executors that cannot act on specific repairs. This is the headline scientific finding.
+- **C3 (Mechanism).** The advantage decomposes into *attribution precision* vs *executor utilization*; the router wins primarily by avoiding granularities the executor cannot exploit, not merely by attributing more accurately.
 
 ---
 
 ## 3. Hypotheses
 
-- **H1 (Goldilocks).** Repair effectiveness is non-monotonic in granularity. Layer/phase-level attribution outperforms both global (too coarse to localize) and exact-step (attribution noise dominates, repairs overfit the single trace).
-- **H2 (Type-conditioned optimum).** The best granularity is not global across failure types. Mechanistic, locally-caused failures (bad tool args, invalid schema use) favor finer attribution; diffuse, upstream-caused failures (wrong plan, premature termination) favor coarser attribution.
-- **H3 (Attribution ≠ benefit).** A non-trivial share of the apparent advantage of any granularity is mediated by the executing agent's utilization, not by attribution precision alone; finer attribution can *fail to pay off* when the executor cannot act on the more specific repair.
+- **H1 (Type-conditioned optimum).** No single granularity is best across failure types. Mechanistic, locally-caused failures (bad tool args, invalid schema) favor finer attribution; diffuse, upstream-caused failures (wrong plan, premature termination) favor coarser attribution.
+- **H2 (Capability-dependent optimum — the surprise).** The optimal granularity shifts with executor capability. Strong executors benefit from fine, specific repairs; **weak executors do worse with fine repairs** because they fail to activate/follow specific patches — so a coarser, more prescriptive repair helps them more. The granularity ranking therefore *inverts* across capability tiers.
+- **H3 (Router dominance).** A router conditioned on (failure type, executor) beats every fixed granularity, and the gap is largest where H1/H2 predict the most disagreement among fixed granularities.
+- **H4 (Mechanism).** The router's gain is mediated more by *executor utilization* (acting on the repair) than by raw *attribution accuracy* — i.e. it wins by matching repair specificity to what the executor can use.
 
-If H1/H2 hold, "pick the granularity that fits the failure" becomes a concrete, defensible design rule. If H3 holds, it explains why prior pipelines at different granularities report comparable gains, and reframes how the field should report results.
+If H2 holds it is genuinely non-obvious and citable on its own: *the right repair granularity depends on the model that has to use the repair.*
 
 ---
 
 ## 4. Relation to Existing Work (sharpened)
 
-The prior methods are no longer competitors — they become **named points on the granularity axis** that this study measures against each other under controlled conditions.
+Prior methods become **named fixed-granularity baselines** that the router is measured against.
 
-| Granularity level | Representative prior work | Repair unit |
-|---|---|---|
-| Global | GEPA (2507.19457), ReAct+Reflection | whole prompt / whole harness |
-| Functional-layer | **HarnessFix (2606.06324)**, AHE (2604.25850), Self-Harness (2606.09498) | ETCLOVG-style component layer |
-| Temporal-phase | *this study* (a level being tested, not the contribution per se) | loop phase / iteration position |
-| Exact-step | **CausalFlow (2605.25338)**, AgenTracer | single responsible step |
+| Granularity | Representative prior work | Repair unit | Role here |
+|---|---|---|---|
+| Global | GEPA (2507.19457), ReAct+Reflection | whole prompt/harness | fixed baseline |
+| Functional-layer | **HarnessFix (2606.06324)**, AHE (2604.25850), Self-Harness (2606.09498) | ETCLOVG component layer | **strongest fixed baseline** |
+| Temporal-phase | this work (a contestant *and* a router input) | (component, loop-phase) | fixed baseline + router signal |
+| Exact-step | **CausalFlow (2605.25338)**, AgenTracer | single responsible step | fixed baseline |
 
-Explicit differences from the closest neighbor, **HarnessFix**:
+Differences from the closest neighbor **HarnessFix**:
 
-1. HarnessFix fixes one granularity (step→layer) and optimizes the pipeline. GrainProbe **varies granularity as the independent variable** and fixes the pipeline.
-2. HarnessFix reports end-to-end held-out gains. GrainProbe additionally reports **attribution accuracy, repair-localization precision, and a gain-decomposition** that HarnessFix does not isolate.
-3. HarnessFix's layers are static *functional roles*. GrainProbe adds a **temporal-phase** level (same component, different loop position / retry index) as a distinct, testable point — directly probing whether HarnessFix's functional-only attribution mislocates time-dependent failures.
+1. HarnessFix commits to step→layer granularity. GrainRoute **chooses granularity per failure**; HarnessFix is recovered as the router's fixed-layer special case.
+2. HarnessFix reports single-executor held-out gains. GrainRoute reports **how the optimal granularity moves across executors** — a result HarnessFix cannot produce without abandoning its fixed granularity.
+3. HarnessFix's layers are static functional roles. GrainRoute adds **temporal phase** as a router input and tests whether functional-only attribution mislocates time-dependent failures.
 
-Difference from **CausalFlow**: CausalFlow asserts finer/causal is necessary; GrainProbe **tests that assertion** against coarser levels under a shared executor and operator set, rather than assuming it.
+From **CausalFlow**: it asserts finer/causal is necessary; GrainRoute **tests when finer pays off and when it backfires** (H2), rather than assuming it universally.
 
-Difference from **"Harness Updating Is Not Harness Benefit"**: that paper disentangles *update-production* from *update-utilization* across model tiers. GrainProbe borrows its decomposition logic and applies it to the *granularity* axis, controlling the executor so that granularity, not capability, is what varies.
+From **"Harness Updating Is Not Harness Benefit"** (2605.30621): that paper disentangles update-*production* from update-*utilization* across capability tiers. GrainRoute applies the same decomposition to the **granularity** axis and turns the confound into the C2/H2 finding.
 
 ---
 
 ## 5. Formal Setup
 
-An agent loop is the configuration `C = {P, T, R, M, V, S}` (planner, tool policy, recovery, memory, verifier, stopping) — as in `FRAMING.md`. A run produces a trace `τ = {(m_t, a_t, o_t, c_t)}`.
-
-Define an **attribution function at granularity `g`**:
+Agent loop `C = {P, T, R, M, V, S}`; run produces trace `τ`. Define an **attribution function at granularity `g`**:
 
 ```text
-A_g : τ  ->  u_g        (the repair unit at granularity g)
-g ∈ { global, layer, phase, step }
+A_g : τ -> u_g          g ∈ { global, layer, phase, step }
+A_global(τ) = τ          A_layer(τ) = ℓ ∈ ETCLOVG
+A_phase(τ)  = (ℓ, π)     A_step(τ)  = t* ∈ {1..T}
 ```
 
-- `A_global(τ) = τ`            (the whole trace)
-- `A_layer(τ)  = ℓ ∈ ETCLOVG`  (a functional component layer)
-- `A_phase(τ)  = (ℓ, π)`       (component layer × temporal phase/iteration bucket π)
-- `A_step(τ)   = t* ∈ {1..T}`  (a single responsible step)
+A **shared repair-operator library** `O` maps a repair unit to a minimal patch: `ρ(u_g, τ, O) -> C'`. The executor, `O`, and the acceptance gate are identical across all `g`.
 
-A **shared repair operator library** `O` maps a repair unit to a candidate patch:
+**The method — a granularity router.** Given a failure signature `s(τ)` (failure-type features) and an executor descriptor `e` (capability tier / family), learn a policy
 
 ```text
-ρ : (u_g, τ, O)  ->  C'      (a minimal patch to C)
+π_route : (s(τ), e) -> g* ∈ { global, layer, phase, step }
 ```
 
-Crucially, `O`, the executing agent, and the validation rule are **identical across all `g`**. Only `A_g` — the granularity of what gets fed to `ρ` — changes.
-
-A patch `C'` is accepted iff it passes the **same** regression-safe gate for every `g`:
+that selects the granularity whose repair maximizes expected validated improvement:
 
 ```text
-J_val(C') > J_val(C) + ε      and      ΔRegression ≤ δ
+g* = argmax_g  E[ J_val( accept( ρ(A_g(τ), τ, O) ) ) ]
 ```
 
-where `J` is the process-aware objective from `FRAMING.md` §6 (success minus weighted cost, tool-loops, contract violations, failure recurrence).
-
-The study measures, for each `g`: accepted-patch quality, attribution accuracy, localization precision, regression rate, cost, and the H3 decomposition.
+Acceptance is the same regression-safe gate for every `g`: `J_val(C') > J_val(C) + ε` and `ΔRegression ≤ δ`. The router is trained on held-in (failure, executor, outcome-per-granularity) tuples and evaluated on held-out tasks/executors. Fixed-granularity baselines are the degenerate policies `π ≡ g`.
 
 ---
 
-## 6. The Controlled Harness (what is held constant)
+## 6. The Controlled Apparatus (foundation, held constant)
 
-This is the heart of the paper — the apparatus, not the algorithm.
-
-| Held constant across all granularities | Why |
+| Held constant across all granularities & the router | Why |
 |---|---|
-| **Executing agent** (same base model, same loop `C₀`) | isolates granularity from executor capability (the 2605.30621 confound) |
-| **Repair-operator library `O`** | a difference must come from *which* operator the granularity selects, not from a richer operator set |
-| **Validation protocol** (`ε`, `δ`, validation/test splits) | acceptance bar identical, so regression behavior is comparable |
-| **Trace instrumentation & contracts** | all granularities see the same logged evidence |
-| **Repair LLM and its budget** | finer attribution cannot win by simply spending more |
+| **Repair-operator library `O`** | a difference must come from *which* operator the granularity selects, not a richer toolbox |
+| **Validation gate** (`ε`, `δ`, splits) | identical acceptance bar → comparable regression behavior |
+| **Trace instrumentation & contracts** | every granularity sees the same evidence |
+| **Repair-LLM budget** | finer attribution cannot win by spending more tokens |
 
-Only the attribution stage `A_g` is swapped. This is the single design decision that makes the result a measurement rather than another leaderboard entry.
+What **varies on purpose**: (a) the attribution granularity `A_g` (the axis), and (b) the **executor** — varied as a *primary experimental factor*, not an ablation, to establish C2/H2.
 
 ---
 
-## 7. Granularity Levels Under Test
+## 7. Granularity Levels and the Router
 
-1. **Global (G0)** — reflect over the full trace; repair may touch any component (GEPA-like).
-2. **Layer (G1)** — attribute to one ETCLOVG-style functional component; repair scoped to that component (HarnessFix-like).
-3. **Phase (G2)** — attribute to `(component, temporal-phase)`, where phase buckets the loop by position/iteration (early-plan / mid-exec / late-finalize) and by recurrence (first occurrence vs k-th retry). Same component, different time → different operator.
-4. **Step (G3)** — attribute to a single responsible step via counterfactual / LLM-judge; repair targets that step's component with maximal locality (CausalFlow-like).
+Levels under test: **Global (G0)**, **Layer (G1, HarnessFix-like)**, **Phase (G2)**, **Step (G3, CausalFlow-like)** — defined as in the earlier draft (G2 = (component, loop-phase) with position and recurrence buckets).
 
-G2 is the level the original `FRAMING.md` cared about; here it is *one contestant*, not the thesis. The thesis is the **curve over G0–G3 and its dependence on failure type**.
+**Router variants** (increasing ambition):
+
+- **R-type** — conditions on failure type only (tests H1/H3).
+- **R-full** — conditions on (failure type, executor descriptor) (tests H2/H3; this is the headline method).
+- **R-oracle** — uses ground-truth best granularity per failure (upper bound; isolates router error from ceiling).
+
+The headline claim is **R-full > best fixed granularity (incl. G1/HarnessFix) on held-out tasks and held-out executors.**
 
 ---
 
 ## 8. Shared Repair-Operator Library
 
-A fixed catalogue of minimal operators, reused verbatim by every granularity (examples):
-
-- Tool: schema narrowing, argument validator insertion, tool-menu re-ranking, error-message rewrite.
-- Context/Memory: failure-tail evidence preservation, retrieval re-scoring, write filter.
-- Lifecycle: loop guard, retry bound, no-progress detector, verification-gated finalization.
-- Verification: readiness check, intermediate validation gate, grounding/evidence contract.
-- Planning: constraint-extraction checklist, decomposition template.
-
-The attribution granularity determines **which operator(s) become eligible** and **how tightly scoped** the patch is — nothing else.
+Fixed catalogue reused verbatim by every granularity and the router: tool-schema narrowing / argument validator / tool-menu re-ranking / error-message rewrite; failure-tail evidence preservation / retrieval re-scoring / write filter; loop guard / retry bound / no-progress detector / verification-gated finalization; readiness check / intermediate validation gate / grounding contract; constraint-extraction checklist / decomposition template. Granularity determines **which operators are eligible** and **how tightly scoped** the patch is — nothing else.
 
 ---
 
 ## 9. Evaluation Plan
 
-- **Main benchmark: AppWorld** (90:45:90 split, matching HarnessFix so numbers are comparable). Stateful multi-app API tasks exercise all components.
-- **Diagnostic benchmark: a granularity-labeled failure set (GrainBench).** 150–300 controlled failures, each annotated with (a) the *true* responsible component, (b) the *true* temporal phase, (c) the *true* responsible step. This is what makes attribution-accuracy and localization-precision measurable per granularity. Designed to include **time-dependent failures** (same component, different loop position) to test whether G1 (functional-only) mislocates them relative to G2.
-- **Transfer check: GAIA or a Terminal-Bench subset.** Confirm the granularity ranking is not AppWorld-specific.
+- **Main benchmark: AppWorld** (90:45:90 split, matching HarnessFix for direct comparability). Exercises all components.
+- **Multiple executors (primary factor): ≥3 model families across ≥2 capability tiers** (e.g. a strong frontier model, a mid-tier, a small open model). This is where C2/H2 lives — single-executor results are explicitly insufficient.
+- **GrainBench (diagnostic, construct-valid):** 150–300 failures with ground truth for (component, temporal phase, responsible step). To avoid the self-labeling attack:
+  - Prefer **deterministically injected faults** (corrupt a tool schema, force a stale memory, cap retries) so the true responsible unit is *known by construction*, not annotated.
+  - For naturally-occurring failures, anchor labels to **environment-checkable state assertions** where possible; report **inter-annotator agreement** on the residual and treat attribution accuracy as *bounded*, not exact.
+  - Include ≥20% **time-dependent failures** (same component, different loop position/retry) to test whether G1 mislocates relative to G2.
+- **Transfer: GAIA or a Terminal-Bench subset** — confirm the granularity ranking and router advantage are not AppWorld-specific.
 
-The agent only evolves on the held-in split; all headline numbers are held-out test.
+Agent evolves only on held-in; all headline numbers are held-out task **and** held-out executor.
 
 ---
 
 ## 10. Baselines / Conditions
 
-The conditions *are* the granularity levels (G0–G3 from §7), all running through the shared harness of §6. Two extra references:
+- **No-repair control** (`C₀` frozen) — floor.
+- **Fixed G0 / G1 / G2 / G3** — G1 is the HarnessFix-style strongest fixed baseline.
+- **R-type, R-full** — the proposed routers.
+- **R-oracle** — router upper bound.
+- **Oracle attribution at each fixed `g`** — feed GrainBench ground truth to separate *attribution error* from *operator/executor ceiling*.
 
-- **No-repair control** (`C₀` frozen) — the floor.
-- **Oracle attribution** — feed the ground-truth label from GrainBench at each granularity, to separate *attribution error* from *operator/executor ceiling*.
-
-The oracle condition is what cleanly answers RQ3/H3: if oracle-G3 ≫ realized-G3 but oracle-G1 ≈ realized-G1, the bottleneck at fine granularity is attribution noise, not the operator.
+The decisive comparisons: **R-full vs best fixed `g`** (C1/H3), and **how argmax_g shifts across executors** (C2/H2).
 
 ---
 
 ## 11. Metrics
 
-**Per-granularity attribution quality** (needs GrainBench labels):
+**Attribution quality (per granularity, needs GrainBench labels):** attribution accuracy, repair-localization precision/recall, over-edit rate.
 
-- Attribution accuracy (does `A_g` hit the true unit at its granularity?)
-- Repair-localization precision/recall (does the patch touch the right component and only it?)
-- Over-edit rate (lines/components changed beyond the true cause)
+**Repair outcome:** held-out task success; process-level (token cost, tool-call count, termination-failure rate, contract compliance, tool-loop rate, recovery success); **P-FRR** (phase-specific failure recurrence); regression rate.
 
-**Repair outcome:**
+**Router-specific:** router accuracy vs R-oracle; **net gain of R-full over best fixed `g`**; regret per failure type.
 
-- Held-out task success
-- Process-level: token cost, tool-call count, termination-failure rate, contract compliance, tool-loop rate, recovery success
-- **Phase-Specific Failure Recurrence Rate (P-FRR)** carried over from `FRAMING.md`
-- Regression rate (newly-broken previously-passing tasks)
+**Mechanism decomposition (C3/H4):**
 
-**Decomposition (the H3 deliverable):**
+- Gain from *attribution precision* = (oracle-`g` − realized-`g`).
+- Gain from *executor utilization* = patch acceptance-and-follow rate under fixed executor.
+- A mediation/intervention table attributing the router's win between the two — done via *intervention* (force a granularity, measure utilization) rather than hand-wavy gap subtraction.
 
-- Gain attributable to *attribution precision* = (oracle-`g` − realized-`g`)
-- Gain attributable to *executor utilization* = patch-acceptance-and-follow rate under fixed executor
-- A simple mediation/ablation table separating the two
-
-**Headline figure:** repair quality vs granularity, one curve per failure type — the visual answer to H1/H2.
+**Headline figures:** (1) R-full vs all fixed granularities, per benchmark; (2) **argmax_g vs executor capability** — the curve that shows the optimum shifting (and inverting) across tiers.
 
 ---
 
 ## 12. Ablations
 
 1. **Oracle vs realized attribution** at each granularity (isolates attribution noise).
-2. **Operator-set held vs enriched** (confirms gains aren't from a bigger toolbox at finer levels).
-3. **Executor swapped** across two capability tiers (probes H3 / the 2605.30621 effect directly).
-4. **Phase definition variants** for G2 (position-only vs recurrence-only vs both).
-5. **Validation gate on/off** (does finer granularity overfit single traces more when unguarded?).
-6. **Cost-matched** comparison (equalize repair-LLM tokens across granularities).
+2. **Executor swap** across capability tiers — *promoted to main result* (C2/H2), retained here as the formal ablation that the optimum moves.
+3. **Router feature ablation** — type-only vs type+executor vs +trace-features (what the router actually needs).
+4. **Operator-set held vs enriched** (gains aren't from a bigger toolbox at finer levels).
+5. **Phase definition variants** for G2 (position-only / recurrence-only / both).
+6. **Validation gate on/off** (does finer granularity overfit single traces when unguarded?).
+7. **Cost-matched** comparison (equal repair-LLM tokens across granularities).
 
-The most important is #1 + #3 together: they convert "which granularity wins" into "*why* it wins."
+Most important: #1 + #2 + #3 together convert "the router wins" into "*why and when* it wins."
 
 ---
 
 ## 13. Expected Contributions
 
-1. A **formalization of repair-signal granularity** and a controlled harness that varies it while holding executor, operator library, and validation constant.
-2. **GrainBench**: a granularity-labeled failure dataset (component / phase / step ground truth) enabling per-granularity attribution and localization metrics — including time-dependent failures.
-3. An **empirical granularity–performance characterization** across AppWorld and a transfer set, with the per-failure-type sweet-spot analysis (H1/H2).
-4. A **decomposition of gains into attribution-precision vs executor-utilization** (H3), directly controlling the "harness-updating ≠ harness-benefit" confound — a result no prior pipeline isolates.
-5. Practical guidance: **a failure-type → granularity selection rule**, and evidence on whether the temporal-phase level adds anything over functional-layer attribution.
+1. **GrainRoute**, a failure-type- and executor-conditioned granularity **router** for loop repair, shown to beat every fixed-granularity method including HarnessFix-style layer repair under identical executor/operators/validation.
+2. The **first evidence that optimal repair granularity shifts with executor capability** (and can invert across tiers) — operationalizing the "harness-updating ≠ harness-benefit" effect for the granularity axis.
+3. A **controlled apparatus** that varies only attribution granularity, enabling the above to be measured rather than confounded.
+4. **GrainBench**, a construct-valid, fault-injected, partially environment-checked failure dataset with component/phase/step ground truth, including time-dependent failures.
+5. A **mechanism decomposition** (attribution precision vs executor utilization) showing *why* the router wins — a result no fixed-granularity pipeline isolates.
 
-These are measurement/diagnostic contributions, which are much harder to scoop than "another pipeline," and which the nearest neighbors (HarnessFix, CausalFlow) structurally cannot claim because each fixes a single granularity.
+### Why this clears a top-venue bar
+It is a **method with a non-obvious, generalizable finding**, not a measurement note. The router gives reviewers a tool; the capability-shift finding gives them a surprise; the controlled apparatus + fault-injected benchmark give them rigor. HarnessFix/CausalFlow cannot make claims (1)–(2) without abandoning their fixed granularity.
 
 ---
 
 ## 14. Minimum Viable Prototype
 
-- **Week 1.** Build the controlled harness: one ReAct/LangGraph executor `C₀`, the shared operator library `O`, the regression-safe validation gate, JSONL tracing. The four attribution functions `A_global/layer/phase/step` as swappable modules.
-- **Week 2.** GrainBench v0: 60–80 controlled failures with component/phase/step labels, including ≥20 time-dependent cases. Automatic checkers.
-- **Week 3.** Run G0–G3 + oracle on GrainBench v0. Produce the first granularity curve and the oracle-vs-realized gap.
-- **Week 4.** If the curve shows structure (non-monotonic or type-dependent), scale to AppWorld held-in/held-out and add the executor-swap ablation.
+- **Week 1.** Controlled apparatus: one executor `C₀`, shared operator library `O`, regression-safe gate, JSONL tracing, and the four swappable `A_g`.
+- **Week 2.** GrainBench v0: 60–80 **fault-injected** failures (known ground truth) + ≥15 time-dependent cases; automatic checkers.
+- **Week 3.** Run fixed G0–G3 + oracle on GrainBench v0 on **two** executors (one strong, one weak). First test of H2: does argmax_g differ between them? *This is the early go/no-go.*
+- **Week 4.** Train R-type / R-full; show R-full ≥ best fixed `g`. If H2 signal + router advantage hold, scale to AppWorld (90:45:90), full executor panel, and the mechanism decomposition.
 
-Kill criterion: if G0–G3 are statistically indistinguishable on GrainBench *and* the oracle gap is flat, the granularity axis carries no signal — report that as a negative result and stop before AppWorld.
+Go/no-go at end of Week 3: **if argmax_g is identical across the strong and weak executor and the fixed-granularity curves are flat, the central novelty (C2) is absent** — pivot to publishing the apparatus + null as a focused finding, or stop.
 
 ---
 
 ## 15. Risks and Mitigations
 
-- **Risk: granularities collapse to similar performance.** This is itself a publishable finding (it would corroborate "harness-updating ≈ flat" 2605.30621 and tell the field to stop competing on granularity). Mitigation: pre-register the oracle conditions so a null is interpretable, not just a failed method.
-- **Risk: GrainBench labels are subjective** (phase/step ground truth is hard — exactly what the failure-attribution literature warns). Mitigation: inter-annotator agreement study; report attribution metrics with agreement bounds; lean on environment-checkable failures where possible.
-- **Risk: the temporal-phase level (G2) is just functional-layer in disguise.** Mitigation: deliberately construct time-dependent failures where the *same* component fails differently by loop position; if G2 = G1 there too, honestly conclude the temporal axis is redundant.
-- **Risk: results are AppWorld-specific.** Mitigation: the transfer set (GAIA / Terminal-Bench subset); report the ranking, not just absolute numbers.
-- **Risk: executor confound leaks back in.** Mitigation: fixed executor by default, with the swap only as a controlled ablation for H3.
+- **R1: The router barely beats the best fixed granularity.** Mitigation: report per-failure-type regret; even a *small* mean gain is publishable if it concentrates on an identifiable failure class. Lead with C2 (the capability-shift finding) which does not depend on a large router margin.
+- **R2: argmax_g does not move across executors (H2 fails).** Mitigation: this collapses the headline; the Week-3 go/no-go exists precisely to detect it early. Fallback: the controlled apparatus + type-conditioned router (C1/H1) is still a workshop-to-borderline contribution.
+- **R3: GrainBench label validity.** Mitigation: fault-injection gives ground truth by construction for the core set; IAA bounds + environment checks for the rest; attribution metrics reported as bounded.
+- **R4: Results are AppWorld-specific.** Mitigation: the transfer set, and reporting the *ranking/shift*, not just absolute numbers.
+- **R5: Executor confound leaks back in.** Mitigation: executor is varied as a *declared factor*; everything else in the apparatus is frozen.
+- **R6: Mechanism decomposition is contested.** Mitigation: do it by *intervention* (force granularity, measure utilization), not regression on observational gaps.
 
 ---
 
 ## 16. One-Sentence Summary
 
-Rather than proposing another self-evolving harness, this project builds a controlled apparatus that varies only the **granularity** of failure attribution — global, functional-layer, temporal-phase, or exact-step — over a fixed executor, operator library, and validation gate, to measure where the repair-signal sweet spot lies, whether it depends on failure type, and how much of any advantage is attribution precision versus the executing agent's ability to use the repair.
+GrainRoute selects failure repair **granularity** per failure and per executor — global, functional-layer, temporal-phase, or exact-step — over a fixed executor, operator library, and validation gate; it beats every fixed-granularity method including HarnessFix-style layer repair, and shows that the optimal repair granularity *shifts with the executing agent's capability*, turning the "harness-updating ≠ harness-benefit" confound into the paper's central finding.
 
 ---
 
 ## 17. References to Track
 
-1. From Failed Trajectories to Reliable LLM Agents: Diagnosing and Repairing Harness Flaws (HarnessFix). arXiv:2606.06324. https://arxiv.org/abs/2606.06324
+1. From Failed Trajectories to Reliable LLM Agents (HarnessFix). arXiv:2606.06324. https://arxiv.org/abs/2606.06324
 2. CausalFlow: Causal Attribution and Counterfactual Repair for LLM Agent Failures. arXiv:2605.25338. https://arxiv.org/abs/2605.25338
-3. Harness Updating Is Not Harness Benefit: Disentangling Evolution Capabilities in Self-Evolving LLM Agents. arXiv:2605.30621. https://arxiv.org/abs/2605.30621
+3. Harness Updating Is Not Harness Benefit. arXiv:2605.30621. https://arxiv.org/abs/2605.30621
 4. Agentic Harness Engineering (AHE). arXiv:2604.25850. https://arxiv.org/abs/2604.25850
 5. Self-Harness: Harnesses That Improve Themselves. arXiv:2606.09498. https://arxiv.org/abs/2606.09498
 6. Retrospective Harness Optimization. arXiv:2606.05922. https://arxiv.org/abs/2606.05922
 7. GEPA: Reflective Prompt Evolution Can Outperform Reinforcement Learning. arXiv:2507.19457. https://arxiv.org/abs/2507.19457
-8. AppWorld: A Controllable World of Apps and People for Benchmarking Interactive Coding Agents. arXiv:2407.18901. https://arxiv.org/abs/2407.18901
-9. Which Agent Causes Task Failures and When? On Automated Failure Attribution of LLM Multi-Agent Systems. arXiv:2505.00212. https://arxiv.org/abs/2505.00212
+8. AppWorld: A Controllable World of Apps and People. arXiv:2407.18901. https://arxiv.org/abs/2407.18901
+9. Which Agent Causes Task Failures and When? arXiv:2505.00212. https://arxiv.org/abs/2505.00212

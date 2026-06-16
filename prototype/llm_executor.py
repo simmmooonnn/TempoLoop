@@ -112,6 +112,15 @@ _PROTOCOL_PER_CALL = (
     "IMMEDIATELY BEFORE EVERY get_code call, every single time. Calling get_code on an "
     "expired session permanently locks that widget, so always refresh first."
 )
+# Implicit variant (H2 judgment lever, env F3_IMPLICIT=1): states the MECHANIC but not the
+# ACTION — the model must infer "refresh before every fetch" itself. A strong model should
+# infer it; a weak one may not -> capability-dependent UTILIZATION via judgment, not following.
+_PROTOCOL_PER_CALL_IMPLICIT = (
+    "NOTE: the session token expires after a single use, and fetching on an expired "
+    "session permanently locks that widget."
+)
+IMPLICIT = os.environ.get("F3_IMPLICIT", "0") == "1"
+
 _GENERIC = "GENERAL GUIDANCE: Work carefully, read each tool error, and handle failures before finishing."
 
 
@@ -131,7 +140,7 @@ def build_system(config: A.HarnessConfig) -> str:
                 s = (f"SESSION PROTOCOL: Call refresh_session before tool-call #{p.step + 1}, "
                      f"then fetch.")
             elif p.phase == "late":                       # phase granularity, late -> correct per-call op
-                s = _PROTOCOL_PER_CALL
+                s = _PROTOCOL_PER_CALL_IMPLICIT if IMPLICIT else _PROTOCOL_PER_CALL
             else:                                         # layer (phase=None) or phase=early -> up-front op
                 s = _PROTOCOL_UPFRONT
         else:

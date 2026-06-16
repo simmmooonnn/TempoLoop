@@ -2,28 +2,41 @@
 """
 Real-LLM executor for the GrainRoute apparatus (apparatus.py) — the last mock
 swap from FRAMING2.md sec.6. Implements `Executor.rollout(task, config)` against
-the Anthropic Messages API with a real tool-use loop and injected faults, so it
-is a drop-in for `MockExecutor` in `repair_and_validate` / `validate`.
+the Anthropic Messages API with a real tool-use loop and an injected, CONSTRUCT-
+VALID fault, so it is a drop-in for `MockExecutor` in `repair_and_validate` /
+`validate`.
 
 Strong vs weak executor pair (the H2 axis):
     strong = claude-opus-4-8   (most capable Opus-tier)
     weak   = claude-haiku-4-5  (fast, lower-capability)
 
-SECURITY: the API key is read from the ANTHROPIC_API_KEY environment variable
-by the SDK. NEVER hardcode it. Set it before running:
+SECURITY: the API key is read from the ANTHROPIC_API_KEY environment variable by
+the SDK. NEVER hardcode it. Set it before running:
     export ANTHROPIC_API_KEY=sk-ant-...        # bash
     $env:ANTHROPIC_API_KEY = "sk-ant-..."      # PowerShell
-If you ever pasted a key into a chat or a file, rotate it at console.anthropic.com.
+If a key was ever pasted into a chat/file/commit, rotate it at console.anthropic.com.
 
-COST: each rollout is a multi-turn tool loop (2-4 API calls). The probe runs many
-rollouts per instance — keep N tiny while validating, then scale up. See run_probe_llm.py.
+COST: each rollout is a multi-turn tool loop. The probe runs many rollouts.
+Keep N tiny while validating, then scale up. See run_probe_llm.py and FAULT_DESIGN.md.
 
-Requires: pip install anthropic   (https://github.com/anthropics/anthropic-sdk-python)
+Requires: pip install anthropic
 
-SCOPE: this skeleton fully implements ONE fault family end-to-end — F3 (recovery:
-transient tool error, no fallback) — as a worked example. F4 (memory) and F6
-(termination) are marked TODO; add their tools + injection following the F3 pattern
-and the GRAINBENCH.md specs.
+----------------------------------------------------------------------------
+THE FAULT (F3, redesigned): STALE-SESSION RECOVERY — see FAULT_DESIGN.md.
+An earlier "transient error, please retry" fault had NO construct validity
+(capable models retry unaided -> C0 already 4/4 -> zero headroom). This redesign
+fixes all three requirements:
+
+  (1) C0 fails even for Opus: the first naive get_code on a stale session
+      *permanently locks* that widget (irrecoverable) -> task fails. The fix
+      (refresh BEFORE fetching) is non-obvious and not hinted.
+  (2) Correct behavior is non-obvious, NOT "retry harder" (which Opus does
+      anyway and which does not help here — reactive refresh is too late).
+  (3) Phase-level repair (G2) beats layer-level (G1) on `late` instances:
+      layer installs a phase-blind "refresh once up front" op (works early,
+      FAILS late); phase installs the phase-matched op (per-call refresh on late).
+
+F4 (memory) and F6 (termination) remain TODO — follow this pattern + GRAINBENCH.md.
 """
 from __future__ import annotations
 
@@ -33,56 +46,29 @@ import apparatus as A
 
 STRONG_MODEL = "claude-opus-4-8"
 WEAK_MODEL = "claude-haiku-4-5"
-MAX_TURNS = 10
-# How many consecutive get_code calls the injected fault keeps failing before the
-# code returns. =1 is trivially recoverable (any model just retries once -> no headroom).
-# Raise it so a naive agent gives up before the code clears, creating room for a
-# recovery repair to help. Tune via env F3_FAIL_TIMES. (GRAINBENCH construct validity.)
-F3_FAIL_TIMES = int(os.environ.get("F3_FAIL_TIMES", "1"))
+MAX_TURNS = 16
 
+# Session freshness window (in tool-calls) after a refresh, by failure phase.
+TTL_EARLY = 999   # one up-front refresh covers the whole episode
+TTL_LATE = 1      # refresh covers only the immediately following fetch -> must refresh per-call
 
-# --------------------------------------------------------------------------- #
-# Patch guidance: a HarnessConfig patch becomes a system-prompt snippet. WHICH
-# snippet is added depends on the granularity's attribution (the operator);
-# WHETHER the executor follows it is utilization (the H2/H4 channel).
-# --------------------------------------------------------------------------- #
-PATCH_GUIDANCE = {
-    "retry_bound_fallback": (
-        "RECOVERY POLICY: If a tool returns a transient error (e.g. 'rate_limited', "
-        "'temporary_unavailable'), do NOT give up and do NOT change approach. Retry the "
-        "exact same tool call up to 3 times; the error is temporary and will clear."
-    ),
-    "broad_reflection_rewrite": (  # global patch: unscoped, generic
-        "GENERAL GUIDANCE: Work carefully and think step by step before finishing."
-    ),
-    # TODO: retrieval_rescoring (F4/memory), verification_gated_finalization (F6/termination)
-    "noop": "",
-}
+WIDGETS = ["alpha", "beta", "gamma"]
+CODES = {"alpha": "ZK-4417", "beta": "QX-9082", "gamma": "RV-3310"}
 
+USER_PROMPT = (
+    "Retrieve the access codes for these three widgets: alpha, beta, gamma. "
+    "Use get_code for each, then submit all three with submit_codes to finish."
+)
 
-def build_system(config: A.HarnessConfig) -> str:
-    base = (
-        "You are an agent that completes a small task using the provided tools. "
-        "Call tools to do the work; when the task is done, stop."
-    )
-    snippets = []
-    for p in config.patches:
-        g = PATCH_GUIDANCE.get(p.operator, "")
-        if g and g not in snippets:
-            snippets.append(g)
-    return base + ("\n\n" + "\n".join(snippets) if snippets else "")
-
-
-# --------------------------------------------------------------------------- #
-# F3 tool environment: fetch an access code, then submit it. The injected fault
-# makes `get_code` return a transient error on the trigger call; recovery = retry.
-# --------------------------------------------------------------------------- #
-CORRECT_CODE = "ZK-4417"
-
-F3_TOOLS = [
+TOOLS = [
+    {
+        "name": "refresh_session",
+        "description": "Synchronizes the session token.",  # deliberately vague — protocol not hinted
+        "input_schema": {"type": "object", "properties": {}},
+    },
     {
         "name": "get_code",
-        "description": "Fetch the access code for the requested widget.",
+        "description": "Fetch the access code for a widget.",
         "input_schema": {
             "type": "object",
             "properties": {"widget": {"type": "string"}},
@@ -90,49 +76,107 @@ F3_TOOLS = [
         },
     },
     {
-        "name": "submit_code",
-        "description": "Submit the access code to complete the task.",
+        "name": "submit_codes",
+        "description": "Submit all retrieved codes to complete the task.",
         "input_schema": {
             "type": "object",
-            "properties": {"code": {"type": "string"}},
-            "required": ["code"],
+            "properties": {
+                "codes": {
+                    "type": "object",
+                    "description": "Map of widget name -> code, e.g. {\"alpha\": \"...\"}",
+                    "additionalProperties": {"type": "string"},
+                }
+            },
+            "required": ["codes"],
         },
     },
 ]
 
-F3_USER_PROMPT = (
-    "Fetch the access code for widget 'alpha' using get_code, then submit it with "
-    "submit_code to finish."
+
+# --------------------------------------------------------------------------- #
+# Patch guidance: a HarnessConfig patch becomes a system-prompt snippet. WHICH
+# snippet (and how phase-specific) is decided by the granularity's attribution;
+# WHETHER the executor follows it is utilization (the H2/H4 channel).
+# --------------------------------------------------------------------------- #
+_PROTOCOL_UPFRONT = (
+    "SESSION PROTOCOL: The session starts expired. Call refresh_session ONCE at the very "
+    "start, before any get_code. Calling get_code on an expired session permanently locks "
+    "that widget, so never fetch before refreshing."
 )
+_PROTOCOL_PER_CALL = (
+    "SESSION PROTOCOL: The session token expires after a single use. Call refresh_session "
+    "IMMEDIATELY BEFORE EVERY get_code call, every single time. Calling get_code on an "
+    "expired session permanently locks that widget, so always refresh first."
+)
+_GENERIC = "GENERAL GUIDANCE: Work carefully, read each tool error, and handle failures before finishing."
 
 
-class _RolloutState:
-    """Per-rollout mutable env state (fault injection counters)."""
+def build_system(config: A.HarnessConfig) -> str:
+    base = (
+        "You are an agent that completes a task using the provided tools. "
+        "Call tools to do the work; when the task is complete, stop."
+    )
+    snippets = []
+    for p in config.patches:
+        if p.operator == "noop":
+            continue
+        if p.operator == "broad_reflection_rewrite":      # global: unscoped, no protocol -> fails
+            s = _GENERIC
+        elif p.operator == "retry_bound_fallback":        # recovery component
+            if p.step is not None:                        # step granularity: brittle, position-specific (overfits)
+                s = (f"SESSION PROTOCOL: Call refresh_session before tool-call #{p.step + 1}, "
+                     f"then fetch.")
+            elif p.phase == "late":                       # phase granularity, late -> correct per-call op
+                s = _PROTOCOL_PER_CALL
+            else:                                         # layer (phase=None) or phase=early -> up-front op
+                s = _PROTOCOL_UPFRONT
+        else:
+            continue
+        if s not in snippets:
+            snippets.append(s)
+    return base + ("\n\n" + "\n".join(snippets) if snippets else "")
+
+
+# --------------------------------------------------------------------------- #
+class _Env:
+    """Per-rollout stale-session env with destructive lock-on-stale."""
     def __init__(self, task: A.Task):
-        self.task = task
-        self.get_code_calls = 0
-        self.submitted_correct = False
-        # early -> fault fires on the 1st get_code call; late -> on the 2nd (after progress)
-        self.trigger_call = 1 if task.fault.phase == "early" else 2
+        self.ttl = TTL_EARLY if task.fault.phase == "early" else TTL_LATE
+        self.calls = 0            # tool-call counter (monotonic)
+        self.fresh_until = -1     # session fresh while calls <= fresh_until
+        self.locked = set()       # widgets bricked by a stale fetch
+        self.got = {}             # widget -> code successfully retrieved
+        self.first_fault = None   # (call_idx) of first E_STALE/E_LOCKED
 
+    def step(self, name, tool_input):
+        """Return (content_str, is_error, is_fault)."""
+        self.calls += 1
+        if name == "refresh_session":
+            self.fresh_until = self.calls + self.ttl
+            return ("session refreshed", False, False)
+        if name == "get_code":
+            w = str(tool_input.get("widget", "")).strip()
+            if w in self.locked:
+                self._mark_fault()
+                return (f"error: E_LOCKED ({w} is locked)", True, True)
+            if self.calls <= self.fresh_until:            # fresh -> success
+                self.got[w] = CODES.get(w, "??")
+                return (f"code={self.got[w]}", False, False)
+            self.locked.add(w)                            # stale -> destructive lock
+            self._mark_fault()
+            return (f"error: E_STALE ({w} now locked)", True, True)
+        if name == "submit_codes":
+            codes = tool_input.get("codes", {}) or {}
+            ok = all(str(codes.get(w, "")).strip() == CODES[w] for w in WIDGETS)
+            return (("accepted" if ok else "rejected: missing or wrong codes"), not ok, False)
+        return (f"unknown tool {name}", True, False)
 
-def _dispatch(name, tool_input, state: _RolloutState):
-    """Return (content_str, is_error, meta). meta flags fault firing / success."""
-    f = state.task.fault
-    if name == "get_code":
-        state.get_code_calls += 1
-        lo = state.trigger_call
-        if f.fid == "F3" and lo <= state.get_code_calls < lo + F3_FAIL_TIMES:
-            # inject transient error (recoverable by persistent retry)
-            return ("error: rate_limited (temporary, please retry the same call)",
-                    True, {"is_fault": True})
-        return (f"code={CORRECT_CODE}", False, {})
-    if name == "submit_code":
-        ok = str(tool_input.get("code", "")).strip() == CORRECT_CODE
-        state.submitted_correct = state.submitted_correct or ok
-        return ("accepted" if ok else "rejected: wrong code", not ok,
-                {"submitted_correct": ok})
-    return (f"unknown tool {name}", True, {})
+    def _mark_fault(self):
+        if self.first_fault is None:
+            self.first_fault = self.calls
+
+    def succeeded(self):
+        return all(w in self.got for w in WIDGETS)
 
 
 # --------------------------------------------------------------------------- #
@@ -149,26 +193,25 @@ class ClaudeExecutor(A.Executor):
             raise RuntimeError("pip install anthropic") from e
         self.name = name
         self.model = model
-        self.cap = None                     # capability is what the probe MEASURES, not a knob here
+        self.cap = None                       # capability is MEASURED by the probe, not a knob here
         self._client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
 
     def rollout(self, task: A.Task, config: A.HarnessConfig) -> A.Trace:
         if task.fault.fid != "F3":
-            # TODO: implement F4 (memory) and F6 (termination) tool envs.
-            raise NotImplementedError(f"fault {task.fault.fid} not yet wired for the real executor")
+            raise NotImplementedError(f"fault {task.fault.fid} not yet wired (see FAULT_DESIGN.md / GRAINBENCH.md)")
 
         system = build_system(config)
-        messages = [{"role": "user", "content": F3_USER_PROMPT}]
-        state = _RolloutState(task)
+        env = _Env(task)
+        messages = [{"role": "user", "content": USER_PROMPT}]
         steps: list[A.TraceStep] = []
         error_step = None
 
         for _ in range(MAX_TURNS):
             resp = self._client.messages.create(
                 model=self.model,
-                max_tokens=2048,           # small; no `effort`/`thinking` (portable across Opus & Haiku)
+                max_tokens=2048,            # small; no effort/thinking (portable across Opus & Haiku)
                 system=system,
-                tools=F3_TOOLS,
+                tools=TOOLS,
                 messages=messages,
             )
             messages.append({"role": "assistant", "content": resp.content})
@@ -179,9 +222,8 @@ class ClaudeExecutor(A.Executor):
             for block in resp.content:
                 if block.type != "tool_use":
                     continue
-                out, is_err, meta = _dispatch(block.name, block.input, state)
+                out, is_err, is_fault = env.step(block.name, block.input)
                 idx = len(steps)
-                is_fault = meta.get("is_fault", False)
                 step = A.TraceStep(
                     idx,
                     task.fault.component if is_fault else "tool",
@@ -189,7 +231,7 @@ class ClaudeExecutor(A.Executor):
                     f"{task.fault.fid}_error" if is_fault else None,
                 )
                 steps.append(step)
-                if is_fault:
+                if is_fault and error_step is None:
                     error_step = step
                 tool_results.append(
                     {"type": "tool_result", "tool_use_id": block.id,
@@ -199,9 +241,9 @@ class ClaudeExecutor(A.Executor):
                 break
             messages.append({"role": "user", "content": tool_results})
 
-        success = state.submitted_correct
+        success = env.succeeded()
         if success:
-            error_step = None              # recovered: no unresolved fault in the trace
+            error_step = None              # recovered cleanly -> no unresolved fault in the trace
         return A.Trace(task, tuple(steps), success, error_step)
 
     def rollout_clean(self, granularity: str) -> bool:

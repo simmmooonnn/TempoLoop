@@ -14,8 +14,9 @@ Minimal, stdlib-only harness that answers the single decision in `FRAMING2.md` s
 |---|---|---|
 | `week3_probe.py` | **abstract** sanity probe — reward sampled directly from per-granularity priors | fastest check that the verdict logic + H2 mechanism behave |
 | `apparatus.py` + `run_probe.py` | **wired** probe — reward flows through the *real* pipeline: `trace --A_g--> unit --O--> patch --apply--> config' --validate on held-out siblings--> gate` | the one to grow into the real experiment; swap `MockExecutor.rollout` for real models |
+| `decompose.py` | **mechanism** decomposition (C3/H4) — once the probe says GO, explains *why* via two channels: attribution precision (`oracle - realized`) vs executor utilization (force `g`, measure activate-&-follow) | the "why it wins" intervention table for the paper |
 
-Both report the same verdict and both flip to NO-GO under `--null`.
+All report consistent verdicts and flip to NO-GO under `--null`.
 
 ## Run
 
@@ -24,6 +25,10 @@ Both report the same verdict and both flip to NO-GO under `--null`.
 python run_probe.py              # H2 ON  -> GO    (strong=phase, weak=layer)
 python run_probe.py --null       # H2 OFF -> NO-GO (both=phase)
 python run_probe.py --instances 300 --seed 7 --K 2.2
+
+# mechanism decomposition (run after a GO)
+python decompose.py              # H2 ON  -> shift is utilization-mediated (H4)
+python decompose.py --null       # H2 OFF -> utilization flat, no shift to explain
 
 # abstract sanity probe
 python week3_probe.py

@@ -195,6 +195,17 @@ def attribute(trace: Trace, g: str, rng: random.Random) -> RepairUnit:
     return RepairUnit(g, comp, phase, step)
 
 
+def attribute_oracle(task: Task, g: str) -> RepairUnit:
+    """Ground-truth attribution (no noise). Used to isolate attribution error
+    from the operator/executor ceiling (FRAMING2.md sec.10, decompose.py)."""
+    f = task.fault
+    if g == "global":
+        return RepairUnit("global", "*", None, None)
+    phase = f.phase if g in ("phase", "step") else None
+    step = task.trigger_step if g == "step" else None
+    return RepairUnit(g, f.component, phase, step)
+
+
 # --------------------------------------------------------------------------- #
 # Shared operator library O : repair unit -> patch
 # --------------------------------------------------------------------------- #
@@ -235,9 +246,33 @@ def validate(ex: MockExecutor, patch: Patch, siblings_faulty, n_clean: int) -> V
 
 
 def repair_and_validate(ex: MockExecutor, failed_task: Task, g: str,
-                        siblings_faulty, n_clean: int, rng: random.Random) -> Validation:
-    """Full pipeline for one (failure, granularity): attribute -> operator -> validate."""
-    trace = ex.rollout(failed_task, C0)          # the failed trace fed to attribution
-    unit = attribute(trace, g, rng)
+                        siblings_faulty, n_clean: int, rng: random.Random,
+                        oracle: bool = False) -> Validation:
+    """Full pipeline for one (failure, granularity): attribute -> operator -> validate.
+
+    oracle=True uses ground-truth attribution, so (oracle - realized) isolates
+    the attribution-precision component of the gap (C3/H4).
+    """
+    if oracle:
+        unit = attribute_oracle(failed_task, g)
+    else:
+        trace = ex.rollout(failed_task, C0)      # the failed trace fed to attribution
+        unit = attribute(trace, g, rng)
     patch = make_patch(unit)
     return validate(ex, patch, siblings_faulty, n_clean)
+
+
+def measure_utilization(ex: MockExecutor, failed_task: Task, g: str, m: int = 300) -> float:
+    """Intervention: force granularity g with ORACLE attribution, apply the patch,
+    and measure the executor's follow-through on the SAME task (step matches, so
+    generalization is factored out). Returns the realized fix rate above baseline,
+    normalized by the executor's ceiling -> the 'activate & follow' rate (H4).
+
+    Comparing this across executors at a fixed g isolates pure utilization, because
+    operator coverage is executor-independent.
+    """
+    patch = make_patch(attribute_oracle(failed_task, g))
+    cfg = C0.apply(patch)
+    succ = sum(ex.rollout(failed_task, cfg).success for _ in range(m)) / m
+    denom = max(ex.cap - P_C0, 1e-6)
+    return max(0.0, (succ - P_C0) / denom)

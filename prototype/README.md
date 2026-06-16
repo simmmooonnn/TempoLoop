@@ -8,12 +8,26 @@ Minimal, stdlib-only harness that answers the single decision in `FRAMING2.md` s
 - **shift, weak picks coarser** → H2 supported → **GO** (build the router, scale to AppWorld)
 - **no shift, flat curves** → H2 absent → **NO-GO** (pivot or stop)
 
+## Two probes
+
+| File | What | Use |
+|---|---|---|
+| `week3_probe.py` | **abstract** sanity probe — reward sampled directly from per-granularity priors | fastest check that the verdict logic + H2 mechanism behave |
+| `apparatus.py` + `run_probe.py` | **wired** probe — reward flows through the *real* pipeline: `trace --A_g--> unit --O--> patch --apply--> config' --validate on held-out siblings--> gate` | the one to grow into the real experiment; swap `MockExecutor.rollout` for real models |
+
+Both report the same verdict and both flip to NO-GO under `--null`.
+
 ## Run
 
 ```bash
-python week3_probe.py            # H2 mechanism ON  -> expect GO  (strong=phase, weak=layer)
-python week3_probe.py --null     # H2 mechanism OFF -> expect NO-GO (both=phase)
-python week3_probe.py --instances 400 --seed 7 --K 1.6
+# wired pipeline (recommended)
+python run_probe.py              # H2 ON  -> GO    (strong=phase, weak=layer)
+python run_probe.py --null       # H2 OFF -> NO-GO (both=phase)
+python run_probe.py --instances 300 --seed 7 --K 2.2
+
+# abstract sanity probe
+python week3_probe.py
+python week3_probe.py --null
 ```
 
 No dependencies (Python 3.8+).
@@ -33,12 +47,16 @@ That assumption is the thing the real Week-3 run must confirm or refute. The
 probe deliberately reports **NO-GO** when that assumption is switched off
 (`--null`), so the verdict logic is not rigged toward GO.
 
-## Path to the real probe
+## Path to the real probe (from the wired version)
 
-1. Replace `MockExecutor` with two real executors (one strong, one weak) over the
-   controlled harness (shared operator library + regression-safe gate).
-2. Replace `FAULT_TEMPLATES` sampling with real GrainBench v0 fault injection
-   (`GRAINBENCH.md` F3/F4/F6, ≥15 time-dependent instances).
-3. Replace `sample_reward` with: run all 4 attribution levels → apply operator →
-   validate on held-out siblings → record validated improvement.
-4. Read the same verdict. If real `argmax_g` shifts across executors → GO.
+The wired probe (`apparatus.py`) already implements attribution → operator →
+patch → apply → validate-on-siblings → gate → reward. Only one thing is mocked:
+
+1. Implement `Executor.rollout(task, config) -> Trace` with a **real model** over
+   the controlled harness — two instances (one strong, one weak). This is the
+   single swap; `MockExecutor` shows the required interface.
+2. Replace `FAULT_TEMPLATES` + `make_instance` with real GrainBench v0 fault
+   injection (`GRAINBENCH.md` F3/F4/F6, ≥15 time-dependent instances) and the
+   real held-out sibling tasks.
+3. Keep `attribute`, `make_patch`, `validate`, and the gate as-is (or refine the
+   operators). Read the same verdict. If real `argmax_g` shifts across executors → GO.

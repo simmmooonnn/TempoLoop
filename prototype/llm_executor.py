@@ -46,18 +46,22 @@ import apparatus as A
 
 STRONG_MODEL = "claude-opus-4-8"
 WEAK_MODEL = "claude-haiku-4-5"
-MAX_TURNS = 16
 
 # Session freshness window (in tool-calls) after a refresh, by failure phase.
 TTL_EARLY = 999   # one up-front refresh covers the whole episode
 TTL_LATE = 1      # refresh covers only the immediately following fetch -> must refresh per-call
 
-WIDGETS = ["alpha", "beta", "gamma"]
-CODES = {"alpha": "ZK-4417", "beta": "QX-9082", "gamma": "RV-3310"}
+# Number of widgets to fetch. Longer horizon stresses the per-call refresh discipline:
+# a weak executor is likelier to DRIFT (forget to refresh before a later fetch) than a
+# strong one -> this is the H2 utilization lever (set via env F3_NUM_WIDGETS).
+NUM_WIDGETS = int(os.environ.get("F3_NUM_WIDGETS", "3"))
+WIDGETS = [f"w{i+1}" for i in range(NUM_WIDGETS)]
+CODES = {w: f"K{i+1}-{(1000 + (i + 1) * 137) % 9000:04d}" for i, w in enumerate(WIDGETS)}
+MAX_TURNS = 2 * NUM_WIDGETS + 8   # refresh+fetch per widget, plus submit and slack
 
 USER_PROMPT = (
-    "Retrieve the access codes for these three widgets: alpha, beta, gamma. "
-    "Use get_code for each, then submit all three with submit_codes to finish."
+    "Retrieve the access codes for these widgets: " + ", ".join(WIDGETS) + ". "
+    "Use get_code for each, then submit all of them with submit_codes to finish."
 )
 
 TOOLS = [

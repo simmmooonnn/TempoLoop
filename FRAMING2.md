@@ -44,19 +44,49 @@ Two unexploited facts follow:
 Three claims, in priority order:
 
 - **C1 (Method).** A failure-type-conditioned granularity **router** beats the best *fixed* granularity — including HarnessFix-style layer repair — on held-out tasks, under identical executor, operator library, and validation gate.
-- **C2 (Generality).** The optimal fixed granularity is **not constant across executors**: it shifts with model capability, and finer granularity can *hurt* weaker executors that cannot act on specific repairs. This is the headline scientific finding.
-- **C3 (Mechanism).** The advantage decomposes into *attribution precision* vs *executor utilization*; the router wins primarily by avoiding granularities the executor cannot exploit, not merely by attributing more accurately.
+- **C2 (Generality — capability-gated repair benefit).** The realized benefit of a repair is **gated by the judgment the repair demands relative to the executor's capability**: a repair that requires the executor to *infer* what to do helps a strong executor and is unusable by a weak one, even though both receive the identical patch. Consequently the optimal repair (and its granularity) is **not constant across executors**. *(Preliminary real-model evidence in §3a; the literal argmax-**shift** form — weak executors falling back to a coarser repair — requires the purpose-built fault of §3a and is the project's key open experiment.)*
+- **C3 (Mechanism).** The advantage decomposes into *attribution precision* vs *executor utilization*; the router wins primarily by avoiding repairs the executor cannot exploit, not merely by attributing more accurately.
 
 ---
 
 ## 3. Hypotheses
 
 - **H1 (Type-conditioned optimum).** No single granularity is best across failure types. Mechanistic, locally-caused failures (bad tool args, invalid schema) favor finer attribution; diffuse, upstream-caused failures (wrong plan, premature termination) favor coarser attribution.
-- **H2 (Capability-dependent optimum — the surprise).** The optimal granularity shifts with executor capability. Strong executors benefit from fine, specific repairs; **weak executors do worse with fine repairs** because they fail to activate/follow specific patches — so a coarser, more prescriptive repair helps them more. The granularity ranking therefore *inverts* across capability tiers.
-- **H3 (Router dominance).** A router conditioned on (failure type, executor) beats every fixed granularity, and the gap is largest where H1/H2 predict the most disagreement among fixed granularities.
-- **H4 (Mechanism).** The router's gain is mediated more by *executor utilization* (acting on the repair) than by raw *attribution accuracy* — i.e. it wins by matching repair specificity to what the executor can use.
+- **H2 (Capability-gated repair benefit — the surprise).** *Revised from the original "finer granularity hurts weak executors", which preliminary real-model data refutes: weak models follow clear, mechanical repairs perfectly regardless of specificity (§3a).* The real effect is about **judgment, not following-difficulty**: a repair whose correct application requires the executor to *infer* the protocol benefits a strong executor and is unusable by a weak one — the same repair text, opposite outcomes. Where a fault admits both a simple-but-partial repair a weak model *can* apply and a judgment-demanding-but-better repair only a strong model can apply, the optimal repair **inverts** across capability tiers.
+- **H3 (Router dominance).** A router conditioned on (failure type, executor) beats every fixed granularity, and the gap is largest where H1/H2 predict the most disagreement among fixed repairs.
+- **H4 (Mechanism).** The router's gain is mediated more by *executor utilization* (the executor can actually apply the repair) than by raw *attribution accuracy* — it wins by matching repair demand to executor capability.
 
-If H2 holds it is genuinely non-obvious and citable on its own: *the right repair granularity depends on the model that has to use the repair.*
+If H2 holds it is genuinely non-obvious and citable on its own: *whether a repair helps depends on whether the model receiving it can work out how to use it.*
+
+---
+
+## 3a. Preliminary real-model evidence (and what it reframed)
+
+A small real-model probe (`prototype/`, executors `claude-opus-4-8` "strong" / `claude-haiku-4-5` "weak", one fault family) already constrains the claims. It is not the full study — single fault family, tiny N, regression term not yet measured — but it is real models through the real attribution→operator→validate pipeline, and it changed the framing above.
+
+**Construct validity is the binding constraint (confirmed the hard way).** A first fault ("transient tool error, please retry") had **no headroom**: both models recover unaided (C0 success 4/4), so every granularity's improvement was ~0 — a degenerate non-result. A fault is only usable if the correct behavior is *non-obvious* and *not what a capable model already does*. The redesigned fault — **stale-session recovery** with destructive lock-on-stale (`prototype/FAULT_DESIGN.md`) — fixes this: the first naive fetch irrecoverably locks the resource, so C0 = **0/4 even for the strong model**.
+
+**Supported — C1 / H1 (granularity correctness matters).** On the time-dependent (`late`) variant, the wrong-granularity repair fully fails and the right one fully succeeds, for *both* tiers:
+
+| `late` instance | C0 | layer (phase-blind, "refresh once") | phase (matched, "refresh per-call") |
+|---|---|---|---|
+| strong | 0/4 | 0/4 | 4/4 |
+| weak | 0/4 | 0/4 | 4/4 |
+
+This is direct real-model support that selecting the right granularity is worth a large, clean margin (and that functional-layer attribution mislocates time-dependent faults — the gap over HarnessFix-style layer repair).
+
+**Supported — H2 *mechanism* (capability gates judgment-requiring repairs).** With an **explicit** per-call repair, both tiers comply perfectly (strong 5/5, weak 5/5) — so specificity alone does *not* differentiate, refuting the original "finer hurts weak". With an **implicit** repair that states the mechanic but not the action (the executor must *infer* "refresh before every fetch"):
+
+| repair wording | strong | weak |
+|---|---|---|
+| explicit (states the action) | 5/5 | 5/5 |
+| **implicit (must infer the action)** | **5/5** | **0/5** |
+
+Same patch content; the strong model infers and applies it, the weak model cannot. This is the capability-gated-benefit effect (C2/H2) in its true form — judgment-to-apply — and a direct, concrete operationalization of 2605.30621.
+
+**Not yet shown — the literal C2 argmax-*shift*.** The stale-session fault is naturally an H1 fault (one correct protocol), so on it a weak executor that can't use the fine repair has nothing coarser to fall back to (it just fails everything). Demonstrating the *inversion* (weak's optimum is a coarser repair it *can* apply) requires a **purpose-built fault that trades simplicity-followability against judgment-demanding precision** across granularities. The lever is now known (implicitness / judgment demand); building that fault is the project's key open experiment.
+
+**Implication for the paper's spine.** The de-risked, real-model-backed core is **C1 + H1 + the H2 mechanism** (capability-gated repair benefit), which alone is a defensible contribution and a sharper operationalization of 2605.30621 than the literature offers. The literal argmax-shift (C2 headline) is a high-value but unproven extension; the controlled apparatus + the negative results (construct-validity failure, "specificity alone doesn't differentiate") are themselves reportable.
 
 ---
 
@@ -205,7 +235,7 @@ Most important: #1 + #2 + #3 together convert "the router wins" into "*why and w
 ## 13. Expected Contributions
 
 1. **GrainRoute**, a failure-type- and executor-conditioned granularity **router** for loop repair, shown to beat every fixed-granularity method including HarnessFix-style layer repair under identical executor/operators/validation.
-2. The **first evidence that optimal repair granularity shifts with executor capability** (and can invert across tiers) — operationalizing the "harness-updating ≠ harness-benefit" effect for the granularity axis.
+2. The **first evidence that repair benefit is capability-gated by the judgment a repair demands** — the same patch helps a strong executor and is unusable by a weak one (real-model, §3a) — operationalizing the "harness-updating ≠ harness-benefit" effect; with the literal optimal-granularity *inversion* as the targeted follow-up.
 3. A **controlled apparatus** that varies only attribution granularity, enabling the above to be measured rather than confounded.
 4. **GrainBench**, a construct-valid, fault-injected, partially environment-checked failure dataset with component/phase/step ground truth, including time-dependent failures.
 5. A **mechanism decomposition** (attribution precision vs executor utilization) showing *why* the router wins — a result no fixed-granularity pipeline isolates.
@@ -239,7 +269,7 @@ Go/no-go at end of Week 3: **if argmax_g is identical across the strong and weak
 
 ## 16. One-Sentence Summary
 
-GrainRoute selects failure repair **granularity** per failure and per executor — global, functional-layer, temporal-phase, or exact-step — over a fixed executor, operator library, and validation gate; it beats every fixed-granularity method including HarnessFix-style layer repair, and shows that the optimal repair granularity *shifts with the executing agent's capability*, turning the "harness-updating ≠ harness-benefit" confound into the paper's central finding.
+GrainRoute selects failure repair **granularity** per failure and per executor — global, functional-layer, temporal-phase, or exact-step — over a fixed executor, operator library, and validation gate; it beats every fixed-granularity method including HarnessFix-style layer repair, and shows that **a repair's benefit is gated by the judgment it demands relative to the executor's capability** — the same patch helps a strong model and is unusable by a weak one (preliminary real-model evidence, §3a) — turning the "harness-updating ≠ harness-benefit" confound into the paper's central finding.
 
 ---
 
